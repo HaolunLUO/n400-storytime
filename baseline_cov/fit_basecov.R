@@ -1,10 +1,11 @@
 #!/usr/bin/env Rscript
 # Baseline as covariate (Alday 2019) vs baseline subtraction, on the revision
 # core model. Same rows, same fixed terms, same random effects as core.rds.
-#   subtract: dv_cp ~ core                 (baseline coefficient fixed at 1)
-#   covariate: raw_cp ~ core + base_cp_c   (coefficient estimated)
-#   none:     raw_cp ~ core                (coefficient fixed at 0)
-# CP only. Fz columns are in the input for later.
+#   subtract:  dv_<roi> ~ core                  (baseline coefficient fixed at 1)
+#   covariate: raw_<roi> ~ core + base_<roi>_c  (coefficient estimated)
+#   none:      raw_<roi> ~ core                 (coefficient fixed at 0)
+# ROI from the first argument: cp (default) or fz. Fz reuses the CP core
+# fixed and random structure with dv_fz / raw_fz / base_fz.
 
 suppressPackageStartupMessages({
   library(lme4)
@@ -15,10 +16,13 @@ if (!nzchar(Sys.getenv("SLURM_JOB_ID"))) {
   stop("Refusing to fit outside Slurm. Submit run_basecov.sbatch.")
 }
 
+args <- commandArgs(trailingOnly = TRUE)
+roi <- if (length(args) >= 1) args[[1]] else "cp"
+if (!(roi %in% c("cp", "fz"))) stop(paste("unknown roi", roi))
 pool <- "/orcd/pool/005/haolun52/n400_storytime_v1"
 in_csv <- file.path(pool, "baseline_cov", "lmm_input_basecov.csv")
 core_rds <- file.path(pool, "revision", "lmm", "core.rds")
-out_dir <- file.path(pool, "baseline_cov", "lmm")
+out_dir <- file.path(pool, "baseline_cov", if (roi == "cp") "lmm" else paste0("lmm_", roi))
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 ctrl <- lmerControl(
@@ -44,7 +48,10 @@ d$age_c <- d$age - age_center
 d <- droplevels(d[is.finite(d$age), ])
 # Raw units, grand-mean centred: the coefficient is directly the fraction of
 # baseline that gets subtracted (1 = classic correction).
-d$base_cp_c <- d$base_cp - mean(d$base_cp)
+dv <- paste0("dv_", roi)
+raw <- paste0("raw_", roi)
+base_c <- paste0("base_", roi, "_c")
+d[[base_c]] <- d[[paste0("base_", roi)]] - mean(d[[paste0("base_", roi)]])
 cat("rows", nrow(d), "subjects", nlevels(d$subject), "items", nlevels(d$item),
     "age_center", age_center, "\n")
 
@@ -53,15 +60,16 @@ f_core <- formula(core)
 if (nrow(model.frame(core)) != nrow(d)) {
   stop(sprintf("row mismatch with core.rds: %d vs %d", nrow(model.frame(core)), nrow(d)))
 }
-cat("core formula:", deparse1(f_core), "\n")
+f_core <- update(f_core, as.formula(paste(dv, "~ .")))
+cat("roi", roi, "formula:", deparse1(f_core), "\n")
 
 specs <- list(
   subtract = f_core,
-  covariate = update(f_core, raw_cp ~ . + base_cp_c),
-  none = update(f_core, raw_cp ~ .)
+  covariate = update(f_core, as.formula(paste(raw, "~ . +", base_c))),
+  none = update(f_core, as.formula(paste(raw, "~ .")))
 )
 
-key <- c("sur_z", "sur_z:age_c", "sur_z:g1", "sur_z:g2", "base_cp_c")
+key <- c("sur_z", "sur_z:age_c", "sur_z:g1", "sur_z:g2", base_c)
 rows <- list()
 fits <- list()
 for (nm in names(specs)) {
@@ -103,10 +111,11 @@ write.csv(res, file.path(out_dir, "basecov_comparison.csv"), row.names = FALSE)
 
 # subtract vs covariate are nested (beta_base = 1 vs free) only after an offset,
 # so compare the raw-DV models by ML LRT: none (beta=0) vs covariate (free),
-# and covariate vs offset(base_cp_c) (beta=1, same as subtraction).
+# and covariate vs offset(base_<roi>_c) (beta=1, same as subtraction).
 ml_cov <- lmer(specs$covariate, data = d, REML = FALSE, control = ctrl)
 ml_none <- lmer(specs$none, data = d, REML = FALSE, control = ctrl)
-ml_sub <- lmer(update(specs$none, . ~ . + offset(base_cp_c)), data = d, REML = FALSE, control = ctrl)
+ml_sub <- lmer(update(specs$none, as.formula(paste(". ~ . + offset(", base_c, ")"))),
+               data = d, REML = FALSE, control = ctrl)
 lrt <- data.frame(
   test = c("free_vs_no_correction", "free_vs_full_subtraction"),
   chisq = c(2 * (logLik(ml_cov) - logLik(ml_none)), 2 * (logLik(ml_cov) - logLik(ml_sub))),
