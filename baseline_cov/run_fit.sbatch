@@ -17,5 +17,5 @@ module load R/4.5.2
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 echo "host $(hostname) job ${SLURM_JOB_ID} start $(date -Is)"
-Rscript fit_basecov.R
+Rscript fit_basecov.R "${ROI:-cp}"
 echo "end $(date -Is)"
